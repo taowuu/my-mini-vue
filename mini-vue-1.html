@@ -1,0 +1,249 @@
+<div id="app">
+  <!-- <h3>{{title}}</h3> -->
+  <h3>{{state.title}}</h3>
+</div>
+<script>
+  function reactive(obj) {
+    // console.log(obj)
+    return new Proxy(obj, {
+      get(target, key){
+        console.log('get', key)
+        // 依赖收集
+        track(target, key)
+        return target[key]
+      },
+      set(target, key, value){
+        console.log('set', key)
+        target[key] = value
+        // 只能在当前页面使用
+        // app.update()
+        // 触发依赖
+        trigger(target, key)
+      },
+    })
+  }
+  const effectStack = []
+  // 添加副作用
+  function effect(fn) {
+    // 如果 fn 用到响应式数据变化 fn 会再次执行
+    const eff = function() {
+      try {
+        effectStack.push(eff)
+        fn()
+      } finally {
+        effectStack.pop()
+      }
+    }
+    // 执行一次触发依赖收集
+    eff()
+    return eff
+  }
+  const targetMap = {
+    // state: {
+    //   title: [eff]
+    // }
+  }
+  // 依赖收集
+  function track(target, key) {
+    const effect = effectStack[effectStack.length-1]
+    if(effect) {
+      let map = targetMap[target]
+      if(!map) {
+        map = targetMap[target] = {}
+      }
+      let deps = map[key]
+      if(!deps) {
+        deps = map[key] = []
+      }
+      // 存放副作用函数
+      if(deps.indexOf(effect) === -1) {
+        deps.push(effect)
+      }
+    }
+  }
+  // 触发副作用
+  function trigger(target, key) {
+    const map = targetMap[target]
+    if(map) {
+      const deps = map[key]
+      if(deps) {
+        deps.forEach(dep => {
+          dep()
+        })
+      }
+    }
+  }
+  // 创建 vnode
+  function h(tag, props, children) {
+    return {tag, props, children}
+  }
+  const Vue = {
+    createApp(options) {
+      // 暴露给浏览器平台
+      const renderer = Vue.createRenderer({
+        querySelector(sel) {
+          return document.querySelector(sel)
+        },
+        insert(child, parent, anchor) {
+          parent.insertBefore(child, anchor || null)
+        },
+        createElement(tag) {
+          return document.createElement(tag)
+        }
+      })
+      return renderer.createApp(options)
+    },
+    createRenderer({ querySelector, insert, createElement }) {
+      // 返回自定义渲染器
+      return {
+        createApp(options) {
+          // 返回 app
+          return {
+            mount(sel) {
+              // 组件配置解析为 dom
+              // 追加到容器
+              const parent = querySelector(sel)
+              // 兼容 vue2
+              if(options.setup) {
+                // setupState 已经是响应式
+                this.setupState = options.setup()
+              } else {
+                this.data = options.data()
+              }
+              // 让 render 知道数据从哪获取
+              this.proxy = new Proxy(this, {
+                get(target, key) {
+                  if(key in target.setupState) {
+                    return target.setupState[key]
+                  } else {
+                    return target.data[key]
+                  }
+                },
+                set(target, key, value) {
+                  if(key in target.setupState) {
+                    target.setupState[key] = value
+                  } else {
+                    target.data[key] = value
+                  }
+                }
+              })
+              if(!options.render) {
+                options.render = this.compile(parent.innerHTML)
+              }
+              // proxy
+              // const el = options.render.call(options.data())
+              // update
+              this.update = effect(() => {
+                // const el = options.render.call(this.proxy)
+                // parent.innerHTML = ''
+                // // parent.appendChild(el)
+                // insert(el, parent)
+                const vnode = options.render.call(this.proxy)
+                if(!this.isMounted) {
+                  // monted
+                  const el = this.createElem(vnode)
+                  parent.innerHTML = ''
+                  insert(el, parent)
+                  this.isMounted = true
+                } else {
+                  // update
+                  this.patch(this._vnode, vnode)
+                }
+                this._vnode = vnode
+              })
+              // init
+              this.update()
+            },
+            createElem(vnode) {
+              // 忽略 props
+              const el = createElement(vnode.tag)
+              if(typeof vnode.children == 'string') {
+                el.textContent = vnode.children
+              } else {
+                // 递归
+                vnode.children.forEach(child => {
+                  insert(this.createElem(child), el)
+                })
+              }
+              // 记录操作的宿主
+              vnode.el = el
+              return el
+            },
+            patch(n1, n2) {
+              const el = n2.el = n1.el
+              // 判断是否相同节点，省略 key
+              if(n1.tag == n2.tag) {
+                const oldCh = n1.children
+                const newCh = n2.children
+                if(typeof oldCh === 'string') {
+                  if(typeof newCh === 'string') {
+                    // text
+                    if(oldCh !== newCh) {
+                      el.textContent = newCh
+                    } else {
+                      // children
+                      newCh.forEach(child => insert(this.createElem(child), el))
+                    }
+                  }
+                } else {
+                    if(typeof newCh === 'string') {
+                      // children to text
+                      el.textContent = newCh
+                    } else {
+                      // children to children
+                      // [a,b,c]
+                      // [a,b] // a不变
+                      // [b,c]
+                      // [b] // b不变
+                      // [c]
+                      // []// 删除c
+                    }
+                  }
+              }
+            },
+            compile(template) {
+              // 没做模板解析
+              return function render() {
+                // const h3 = document.createElement('h3')
+                // // this 为 options.data()
+                // h3.textContent = this.title
+                // return h3
+                // vndoe
+                // return h('h3', null, this.title)
+                return h('h3', null, [
+                  h('p', null, this.title),
+                  h('p', null, this.title),
+                  h('p', null, this.title),
+                ])
+              }
+            }
+          }  
+        }
+      }
+    }
+  }
+</script>
+<script>
+  // vue3 优点
+  // 函数调用的形式，对变量类型支持更好
+  // tree-shaking，没使用的函数摇掉，打包体积小
+  // proxy， 可对新添加的数据进行响应
+  const { createApp } = Vue
+  const app = Vue.createApp({
+    data() {
+      return {
+        title: 'hello vue3'
+      }
+    },
+    setup() {
+      const state = reactive({
+        title: 'hello vue3!!!'
+      })
+      setTimeout(() => {
+        state.title = 'change vue3'
+      }, 2000)
+      return state
+    }
+  })
+  app.mount('#app')
+</script>
